@@ -1,0 +1,30 @@
+[project]
+name = "animal-crossing-hours"
+version = "0.1.0"
+description = "A program to play Animal Crossing hourly music based on local weather"
+authors = [
+    { name = "kwan3217", email = "kwan3217@gmail.com" }
+]
+dependencies = [
+    "pygame>=2.5.2",
+    "pydub>=0.25.1",
+    "requests>=2.31.0",
+    "numpy>=1.26.4",
+    "scipy>=1.13.1"
+]
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-mock>=3.14.0"
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+play = "animal_crossing_hours.player:main"
+stream = "animal_crossing_hours.streamer:main"
+find-loops = "animal_crossing_hours.loop_finder:main"
