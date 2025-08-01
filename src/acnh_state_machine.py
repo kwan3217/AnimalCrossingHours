@@ -1,20 +1,17 @@
 """
 Describe purpose of this script here
 
-Created: 7/30/25
+Created: 7/31/25
 """
-from collections import namedtuple
+import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Any
+from typing import Callable
 
+import numpy as np
 import sounddevice as sd
 import soundfile as sf
-import numpy as np
-import time
 
-sample_rate = 48000
-fade_samples = int(1.0*sample_rate)  # 1 second at 48kHz
 
 @dataclass
 class SongRecord:
@@ -31,7 +28,10 @@ class PlaybackState(Enum):
     PLAYCHIME=3
 
 
-def make_loop(song:SongRecord):
+sample_rate:int=48000 # All files must be at this rate, otherwise raise an erro
+chunk_size:int=1024   # process samples in chunks of this size
+
+def _make_loop(song:SongRecord,fade_samples:int):
     loopAchunk=song.data[:song.loop_crossfade_length,...].copy()
     loopBchunk=song.data[song.loop_crossfade_begin:song.loop_crossfade_begin+song.loop_crossfade_length,...].copy()
     fade_in=np.arange(song.loop_crossfade_length).reshape(-1,1)/fade_samples
@@ -43,8 +43,9 @@ def make_loop(song:SongRecord):
     return song
 
 
-def load_audio_files()->list[SongRecord]:
+def load_audio_files(fade_time:float=1.0,n_files:int=24)->list[SongRecord]:
     audio_data = []
+    fade_samples=int(fade_time*sample_rate)
     with open("data/loop_points.csv","rt") as inf:
         i_hour=0
         for line in inf:
@@ -54,7 +55,7 @@ def load_audio_files()->list[SongRecord]:
             if line[0]=="#":
                 continue
             loop_point=int(line)
-            filename=f"data/raw/{i_hour:02d}.flac"
+            filename=f"data/snowy/{i_hour:02d}.flac"
             print(f"Loading {filename}")
             # Load all audio files and verify sample rate
             data, fs = sf.read(filename)
@@ -62,15 +63,18 @@ def load_audio_files()->list[SongRecord]:
                 raise ValueError(f"File {filename} has sample rate {fs}, expected {sample_rate}")
             if loop_point >= len(data):
                 raise ValueError(f"Loop point {loop_point} exceeds length of {filename}")
-            audio_data.append(make_loop(SongRecord(data=data,
-                                                   loop_crossfade_begin=loop_point,
-                                                   loop_crossfade_length=fade_samples,
-                                                   filename=filename)))
+            audio_data.append(_make_loop(song=SongRecord(data=data,
+                                                         loop_crossfade_begin=loop_point,
+                                                         loop_crossfade_length=fade_samples,
+                                                         filename=filename),
+                                                         fade_samples=fade_samples))
             i_hour+=1
+            if i_hour>=n_files:
+                break
     return audio_data
 
 
-def load_chime(volume:float=0.5,tfade0:float=15.0,tfade1:float=20.0)->SongRecord:
+def load_chime(volume:float=0.3,tfade0:float=15.0,tfade1:float=18.0)->SongRecord:
     filename = f"data/chimes/Meekay I Chimes.ogg"
     print(f"Loading {filename}")
     # Load all audio files and verify sample rate
@@ -84,7 +88,7 @@ def load_chime(volume:float=0.5,tfade0:float=15.0,tfade1:float=20.0)->SongRecord
     volumes=np.interp(t,[tfade0,tfade1],[volume,0.0],left=volume,right=0.0).reshape(-1,1)
     data*=volumes
     # ensure an integer number of chunks
-    data=data[:1024*(data.shape[0]//1024),...]
+    data=data[:chunk_size*(data.shape[0]//chunk_size),...]
 
     return SongRecord(data=data,
                       loop_crossfade_begin=None,
@@ -92,78 +96,11 @@ def load_chime(volume:float=0.5,tfade0:float=15.0,tfade1:float=20.0)->SongRecord
                       filename=filename)
 
 
-done=False
-
-def play_one(song_data:np.ndarray)->Callable[[np.ndarray,int,'CData',sd.CallbackFlags],None]:
-    calls=0
-    current_sample=0
-    N=song_data.shape[0]
-    def inner(outdata:np.ndarray, frames:int, time:'CData', status:sd.CallbackFlags)->None:
-        nonlocal calls,current_sample
-        global done
-        calls+=1
-
-        samples_left = N - current_sample
-
-        samples_to_write = min(frames, samples_left)
-        outdata[:samples_to_write,...] = song_data[current_sample:current_sample + samples_to_write,...]
-        current_sample += samples_to_write
-        delta=time.outputBufferDacTime-time.currentTime
-        print(f"{calls=} {frames=} {status=} {outdata.shape=} {song_data.shape=} {samples_left=} {samples_to_write=} {time.currentTime=} {time.outputBufferDacTime=} {delta=}")
-
-        # Zero any remaining samples in the output buffer
-        if samples_to_write==0:
-            raise sd.CallbackStop
-            done=True
-        if samples_to_write < frames:
-            outdata[samples_to_write:,...] = 0
-        outdata*=0.1
-    return inner
-
-
-def play_loop_forever(song:SongRecord)->Callable[[np.ndarray,int,'CData',sd.CallbackFlags],None]:
-    calls=0
-    current_sample=0 #Note that this will play the original un-faded intro
-    N=song.data.shape[0]
-    def inner(outdata:np.ndarray, frames:int, time:'CData', status:sd.CallbackFlags)->None:
-        nonlocal calls,current_sample
-        global done
-        calls+=1
-
-        samples_left = N - current_sample
-
-        samples_A = min(frames, samples_left)
-        samples_B = frames-samples_A
-        outdata[0:samples_A,...] = song.data[current_sample:current_sample+samples_A,...]
-        print(f"{calls=} {frames=} {outdata.shape=} {current_sample=} {samples_left=} {samples_A=} {samples_B=}")
-        if samples_B>0:
-            outdata[samples_A:samples_A + samples_B, ...] = song.data[
-                                                              song.loop_crossfade_length:
-                                                              song.loop_crossfade_length + samples_B,
-                                                            ...]
-            current_sample=song.loop_crossfade_length+samples_B
-        else:
-            current_sample += samples_A
-        #outdata*=0.1
-        #delta=time.outputBufferDacTime-time.currentTime
-
-    return inner
-
-
-def get_current_hour():
-    return int(time.localtime().tm_hour)
-
-
-def get_next_hour():
-    return (get_current_hour() + 1) % 24
-
-hour_length=3600
-
-def get_seconds_of_hour():
-    return time.time()%hour_length
-
-
-def play_acnh(songs:list[SongRecord],chime:SongRecord)->Callable[[np.ndarray,int,'CData',sd.CallbackFlags],None]:
+def play_acnh(songs:list[SongRecord],chime:SongRecord,hour_length:int=3600)->Callable[[np.ndarray,int,'CData',sd.CallbackFlags],None]:
+    def get_current_hour():
+        return int(time.localtime().tm_hour)
+    def get_seconds_of_hour():
+        return time.time() % hour_length
     calls=0
     current_sample=0 #Note that this will play the original un-faded intro
     state=PlaybackState.STARTUP
@@ -203,7 +140,7 @@ def play_acnh(songs:list[SongRecord],chime:SongRecord)->Callable[[np.ndarray,int
                 volume=fadeleft
         elif state==PlaybackState.PLAYCHIME:
             volume=1.0
-            if (N-current_sample)<2048:
+            if (N-current_sample)<chunk_size*2:
                 print("Done playing top of hour chime")
                 state=PlaybackState.STARTUP
 
@@ -225,31 +162,3 @@ def play_acnh(songs:list[SongRecord],chime:SongRecord)->Callable[[np.ndarray,int
         #delta=time.outputBufferDacTime-time.currentTime
 
     return inner
-
-
-def main():
-    # Start the audio stream
-    audio_data=load_audio_files()
-    chime=load_chime()
-    try:
-        stream = sd.OutputStream(
-            samplerate=sample_rate,
-            channels=2,
-            callback=play_acnh(audio_data,chime),
-            blocksize=1024
-        )
-        with stream:
-            print("Playing loops with crossfades. Press Ctrl+C to stop.")
-            while not done:
-                time.sleep(1)
-            print("Playback finished.")
-    except KeyboardInterrupt:
-        print("Playback stopped.")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    main()
