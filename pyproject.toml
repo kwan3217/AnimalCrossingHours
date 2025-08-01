@@ -6,11 +6,9 @@ authors = [
     { name = "kwan3217", email = "kwan3217@gmail.com" }
 ]
 dependencies = [
-    "pygame>=2.5.2",
-    "pydub>=0.25.1",
-    "requests>=2.31.0",
     "numpy>=1.26.4",
-    "scipy>=1.13.1"
+    "sounddevice>0.5.0",
+    "soundfile>=0.12.1"
 ]
 requires-python = ">=3.11"
 
